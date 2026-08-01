@@ -1,6 +1,6 @@
-# HackerRank Orchestrate
+# Whatsapp_bot
 
-Starter repository for the **HackerRank Orchestrate** 24-hour hackathon.
+Starter repository for the **HackerRank Orchestrate** 24-hour hackathon WhatsApp Bot.
 
 ## Message Notification Router
 
