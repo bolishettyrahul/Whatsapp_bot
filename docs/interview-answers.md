@@ -17,9 +17,10 @@ can't back up, I've flagged.
 | The samples' split | 10 mute / 9 notify / 11 digest |
 | Reason catalogue size | 24 distinct reasons from 30 labelled rows |
 | Confidence band | 0.78–0.91, taken from the labelled data |
-| Action accuracy (leave-one-out, offline path) | 24/30 = 80% |
-| Type accuracy | 12/30 = 40% |
+| Action accuracy (leave-one-out, offline path) | **26/30 = 86.7%** |
+| Type accuracy | **16/30 = 53.3%** (LOO ceiling is 27/30) |
 | Evidence exact match | 17/30 = 57% |
+| Both correct | 15/30 = 50% (LOO ceiling 22/30) |
 | Media files whose filename lies about the format | 19 of 33 |
 | Threads | One. It's sequential on purpose. |
 
@@ -671,8 +672,8 @@ You still get 110 valid rows. `make_client()` returns `(None, model, why)` when 
 configured, the run prints `! running WITHOUT a model` with the reason, and every row goes
 through `fallback.without_model()`.
 
-That's not a stub. It's the path every number in my README was measured on — 24/30 on
-action, leave-one-out. It runs the behavioural prior first and uses its verdict wherever
+That's not a stub. It's the path every number I quote was measured on — 26/30 on action,
+leave-one-out. It runs the behavioural prior first and uses its verdict wherever
 the prior is confident, then falls through to a cascade: chain-forward language or high
 forward count → mute; opted out → mute; dismissals more than twice opens → mute;
 greeting without scheduling or urgency → digest; group admin → notify; otherwise digest.
@@ -770,15 +771,68 @@ scored as passes.
 
 ### "Describe one iteration loop that actually changed something."
 
-**Say this — pick this one, it's the strongest:**
+You have three strong ones. Lead with whichever the conversation invites; have all three.
 
-The confidence column. I measured discrimination — mean confidence when right minus mean
+---
+
+**Loop 1 — the behavioural prior (this is the one that moved action accuracy).**
+
+The pipeline was stuck at 23/30 on action, and the error pattern was lopsided:
+**notify→digest five times, digest→notify once, and zero mute errors.** So the
+deterministic path was good at risk and bad at urgency — which makes sense, because risk is
+a content judgment and urgency is a preference judgment.
+
+I traced it to the prior being structurally unable to say `notify`. Mute accumulated from
+four features and could reach 9.5; notify had two features and maxed at 4.0. Against a
+fixed digest baseline, notify needed a reply rate above 0.90 — and gold notify rows average
+0.80. It said `digest` on **every single notify row the pipeline was already getting
+wrong.**
+
+The fix was centring each action on its own base-rate score, so everything is a deviation
+from the norm. I have the ablation:
+
+| prior variant | standalone | notify recall |
+|---|---|---|
+| fixed digest baseline 1.0 | 18/30 | — |
+| baseline calibrated to mute-at-norm | 22/30 | — |
+| **deviation-from-norm (shipped)** | **23/30** | **8/9** |
+
+Standalone the prior ties the old cascade at 23/30, but notify recall goes from 4/9 to
+**8/9** — which is the axis that was broken. Wired into the pipeline, action went
+**23/30 → 26/30**.
+
+---
+
+**Loop 2 — `urgent` was 0/4, and per-class reporting is the only reason I saw it.**
+
+Aggregate accuracy hid it completely. The per-class renderer prints a `<-- 0 correct` flag,
+and `urgent` was sitting there with four gold rows and zero correct.
+
+The naive fix — a time-pressure regex — made things worse, because clock-shaped phrases are
+everywhere in this dataset. `TIME_PRESSURE` alone fires on *"when you get 5 mins can you
+call?"*, which is gold `personal`.
+
+What worked was the same shape as the guard that rescued the credential rule: pair the
+pattern with an explicit de-escalation guard. `RELAXED` catches "no pressure", "nothing
+dramatic", "talk tomorrow" — the sender telling you it isn't urgent. That gives **6/6
+discrimination on the urgent-vs-personal rows**, and I scoped it to `notify` only.
+
+One deliberate exclusion I'd mention: `can wait` is **not** in the guard, because *"the
+tanker guy can wait 20 mins max"* is a bounded window — the opposite of de-escalation.
+
+Result: `urgent` went **0/4 → 3/4 recall at 3/3 precision**, and type accuracy went
+13 → **16/30** with macro-F1 0.291 → **0.388**.
+
+---
+
+**Loop 3 — the confidence column.** I measured discrimination — mean confidence when right minus mean
 confidence when wrong — and got **exactly +0.000**. Mean confidence was 0.838 whether the
 answer was right or wrong. Perfectly centred and completely uninformative. It was
 decorative.
 
 The cause was that confidence was a per-catalogue-entry constant, so it carried information
-about the *reason* and none about the *decision*.
+about the *reason* and none about the *decision*. Discrimination went **+0.000 → +0.033**
+and ECE **0.029 → 0.021**.
 
 The fix in `confidence.py` was not to invent a number, it was to say out loud how much
 evidence the decision rested on. Tier 0 rule with measured precision: +0.03. Model and
@@ -792,7 +846,7 @@ nicer story. It measured very slightly **worse**: discrimination 0.030 versus 0.
 0.023 versus 0.021. At n=30 that's noise, so I kept the simpler form. I left the negative
 result in a comment so nobody re-tries it.
 
-### "You have 30 labelled rows. Why should I believe 80%?"
+### "You have 30 labelled rows. Why should I believe 86.7%?"
 
 **Say this — do not get defensive here:**
 
@@ -808,12 +862,25 @@ number I quote rebuilds the catalogue from the other 29 rows.
 
 **A reachability ceiling.** `metrics.loo_ceiling()` computes what leave-one-out makes
 *achievable at all*. Nineteen of the 30 gold reasons appear exactly once, so LOO deletes
-that reason entirely and the correct pair becomes unselectable by any system. `forward`,
-`spam` and `unknown` sit at 0/1 because their only catalogue entry vanished — not because
-the pipeline is wrong about them. Reporting a score without that ceiling would be
-misleading in my own favour.
+that reason entirely and the correct pair becomes unselectable by any system:
 
-I'd also just say plainly: treat 80% as an optimistic ceiling. The offline fallback was
+| Metric | Score | **LOO ceiling** |
+|---|---|---|
+| type accuracy | 16/30 | **27/30** |
+| type macro-F1 | 0.388 | **0.700** |
+| both correct | 15/30 | **22/30** |
+
+`forward`, `spam` and `unknown` sit at 0/1 because their only catalogue entry vanished —
+structurally unselectable by construction, not by defect. Any report treating every
+zero-accuracy class as fixable is wrong about three of them. On a real run the full
+catalogue is present and every type is reachable, so **LOO understates type accuracy.** The
+harness prints those ceilings inline for exactly that reason.
+
+Reporting the score without the ceiling would have been misleading in my own favour, and
+reporting it *with* the ceiling is also why I know which zero-classes were worth chasing —
+`urgent` was the one genuinely fixable one, and that's the loop I just described.
+
+I'd also just say plainly: treat 86.7% as an optimistic ceiling. The offline fallback was
 designed *after* I read the 30 labelled rows. LOO protects against self-matching, but it
 doesn't protect a heuristic from the author's knowledge of the data. That's in my README as
 a known limitation.
@@ -1061,7 +1128,18 @@ distribution over 110 are different questions and I only asked one of them.
 
 ---
 
-## Three things to fix in the repo before you submit
+## Four things to fix in the repo before you submit
+
+0. **Your headline numbers are stale in two places.** The "Measured results" table in
+   `code/README.md` *and* the one in `docs/build-plan.md` both still say
+   `action 24/30 — 80%`, `type 12/30`, `both 11/30`. Those are pre-Revision-6 figures. The
+   revision log at the top of `build-plan.md` is the accurate record: Rev 6 took action
+   **23 → 26/30**, Rev 7 took type **13 → 16/30** and macro-F1 **0.291 → 0.388**, both
+   **12 → 15/30**. You are underselling yourself by nearly 7 points of action accuracy in
+   the two documents a reviewer reads first. Fix both tables to:
+   action **26/30 (86.7%)**, type **16/30 (53.3%)**, both **15/30 (50%)**, evidence
+   **17/30 (57%)** — and keep the LOO ceilings next to the type figures.
+
 
 1. **`code/README.md` documents a "Tier −1" that no longer exists.** It's in the tier table
    with 7 rows. The code has no Tier −1 — `similarity.find_labelled_match` only ever returns
