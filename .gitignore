@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-.env
-*.zip
-detailed_report.py
-
-# NOTE: code/media_cache.json is deliberately NOT ignored. It is a build
-# artifact that must ship inside code.zip -- it is what lets the solution run
-# with no API keys at all. Do not add it here.
